@@ -1,0 +1,16 @@
+node_modules/
+out/
+dist/
+runs/
+test-results/
+playwright-report/
+.e2e-tmp/
+.env
+.env.*
+*.secrets.json
+secrets.json
+secrets.env
+coverage/
+.DS_Store
+*.log
+release/
