@@ -309,6 +309,9 @@ function builderConfig({ platform, archs, distDir }) {
       executableName: 'euta',
       synopsis: 'End-user test automation',
     },
+    // AppImage spells the arch "x86_64"; the release file names say x64 (server classification, app, upload — ADR-041).
+    // Only x64 is built for Linux.
+    appImage: { artifactName: 'euta-${version}-linux-x64.${ext}' },
   };
 }
 
