@@ -33,6 +33,48 @@ ditto release/dist/mac-arm64/euta.app /Applications/euta.app
 - 패키징된 앱으로 E2E: `EUTA_E2E_EXECUTABLE=$PWD/release/dist/mac-arm64/euta.app/Contents/MacOS/euta npx playwright test`
 - `EUTA_PACKAGE_OUT=release/e2e pnpm package` — 출력 폴더를 바꾼다(`release/dist` 의 앱을 실행 중일 때 덮어쓰지 않고 패키징 E2E 를 돌릴 때).
 
+## 릴리스 빌드 · 올리기 (SPEC_앱-배포-업데이트 · ADR-042 · ADR-047)
+
+버전은 `package.json` `version`(SemVer, 알파 동안 `0.1.0-alpha.N`). prerelease 이름이 채널이다(`alpha` — 클라우드 미러의 업데이트 주소 `https://<서버>/updates/alpha/`). 의존성은 **범위**로 적고(정확한 버전 고정 금지), 재현성은 `pnpm-lock.yaml` 이 맡는다 — 빌드는 설치된 정확한 버전을 스테이징에 넣는다.
+
+```bash
+# 0. 버전 올리기 + RELEASES.md 에 "## <버전>" 절(바뀐 것 몇 줄 — 앱 [바뀐 것]·웹 내려받기 화면에 그대로 보임)
+# 1. 빌드 (이 맥에서 네 가지 모두) → release/<버전>/{mac,win,linux}/
+pnpm release                 # 전부 = --mac --win --linux
+pnpm release --mac           # 맥 arm64 + x64: euta-<v>-mac-<arch>.dmg(설치) · .zip(업데이트) · latest-mac.yml
+pnpm release --win --skip-build    # 윈도 x64: euta-<v>-win-x64.exe(NSIS, 사용자 설치) · .blockmap · latest.yml
+pnpm release --linux --skip-build  # 리눅스 x64: euta-<v>-linux-x64.AppImage · latest-linux.yml (Docker 필요)
+# 2. 공개 배포 — GitHub Releases(onedark23/euta-app, GitHub CLI 로그인 계정으로). 태그 app-v<버전> 는 게시할 때 생긴다
+pnpm release:github --mac              # draft 를 만들고 파일을 올린다(게시 전)
+pnpm release:github --win --linux --publish   # 같은 draft 에 이어 올리고 게시(latest, prerelease 아님)
+# 3. (선택) 클라우드 미러 — 그 서버 관리자 계정의 읽기·쓰기 개인 토큰(환경 변수로만, 화면에 찍지 않음)
+EUTA_ADMIN_TOKEN=euta_… pnpm release:upload --server https://<euta cloud> --mac
+EUTA_ADMIN_TOKEN=euta_… pnpm release:upload --server https://<euta cloud> --win --linux --publish
+```
+
+- 디스크: 버전 하나에 약 1.5GB(맥 2 · 윈도 · 리눅스) + 스테이징·압축 전 앱 폴더. **여유 10GB 이상**에서 돌린다. 플랫폼마다 따로 돌려도 된다.
+- 맥: 지금은 **ad-hoc 서명**(Apple Developer 계정 확인 중). 받은 사람이 처음 열 때 "확인되지 않은 개발자" → 시스템 설정 › 개인정보 보호 및 보안 › [그래도 열기]. 앱 안 업데이트는 "새 버전 — [내려받기]"(dmg 를 브라우저로). 계정이 생기면 `EUTA_MAC_SIGN=developer-id` + electron-builder 서명 환경(`CSC_LINK`·`CSC_KEY_PASSWORD` 또는 키체인의 Developer ID, 공증은 `APPLE_API_KEY`·`APPLE_API_KEY_ID`·`APPLE_API_ISSUER`) 로 빌드하면 hardened runtime + 공증이 켜지고, 그 빌드부터 앱이 뒤에서 내려받아 [다시 시작해서 업데이트] 로 바뀐다. 번들 Claude Code CLI 는 Anthropic 서명 그대로 둔다(`signIgnore`).
+- 윈도: 이 맥(macOS 10.15+)에서는 electron-builder 26 이 Wine 없이 NSIS 를 만든다(언인스톨러 추출 `UninstallerReader` · 리소스 편집 `resedit`, 모두 JS — ADR-042. 첫 실제 빌드에서 확인 필요, 안 되면 `electronuserland/builder:wine` 컨테이너). 서명 없음 → 설치 때 SmartScreen [추가 정보] › [실행]. 자동 업데이트 동작.
+- 리눅스: node-pty 에 linux prebuild 가 없어 `electronuserland/builder:wine`(linux/amd64) 컨테이너 안에서 스테이징 `npm install` 을 돌려 Electron 헤더로 컴파일한다(npm 캐시 `~/.cache/euta-release/npm-linux`). AppImage 는 내려받은 뒤 `chmod +x`. OS 입력(robotjs)은 X11 에서만.
+- 빌드 검사: main 이 import 하는 패키지가 스테이징에 다 있는지(없으면 실패), 앱 안 Claude Code CLI 가 npm 원본과 같은 바이트인지(sha256)·다른 플랫폼 CLI 가 안 들었는지, `latest*.yml` 에 각 arch 파일이 있는지.
+- 받는 곳(앱): 앱이 연결한 클라우드 서버가 앱을 배포하면(`GET /api/config` `appUpdates`) 그 서버, 아니면 GitHub Releases(`releases/latest/download/` — GitHub API 를 쓰지 않음). 확인할 때마다 고르고, 고른 서버에 닿지 않으면 GitHub 로 넘어가지 않고 그 확인만 실패한다(ADR-047). 앱 설정 › 업데이트 "받는 곳" 에 보인다.
+- GitHub: `releases/latest` 는 prerelease 를 건너뛰므로 **prerelease 표시를 하지 않는다**(채널은 버전 이름). 같은 버전을 다시 돌리면 파일을 덮어쓴다(`--clobber`). `--repo` 로 다른 레포.
+- 클라우드 미러: 같은 버전이 draft 면 이어서 올리고, 이미 게시됐으면 거절한다(버전을 올린다). 서버 주소는 `--server` 또는 `EUTA_UPDATE_SERVER` 로 반드시 준다. `--version`·`--dir` 로 다른 산출물.
+
+## 설치 (사용자)
+
+설치 파일은 GitHub Releases(`https://github.com/onedark23/euta-app/releases/latest`) 또는 연결할 euta cloud 의 웹 **앱 내려받기** 화면에서 받는다(그 서버가 앱을 배포할 때).
+
+| OS | 설치 | 처음 열 때 | 업데이트 |
+|---|---|---|---|
+| macOS (Apple 칩 `mac-arm64` · Intel `mac-x64`) | dmg 를 열어 euta 를 응용 프로그램으로 끌기 | "확인되지 않은 개발자" → 시스템 설정 › 개인정보 보호 및 보안 › [그래도 열기] | 머리줄 "새 버전 — [내려받기]" → 새 dmg 로 덮어 설치 |
+| Windows x64 | `euta-<v>-win-x64.exe` 실행(관리자 권한 불필요, 사용자 폴더에 설치) | SmartScreen → [추가 정보] › [실행] | 뒤에서 내려받은 뒤 "준비됨 — [다시 시작해서 업데이트]"(또는 앱을 끌 때 설치) |
+| Linux x64 (Ubuntu 계열, X11) | `chmod +x euta-<v>-linux-x64.AppImage` 후 실행 | — | Windows 와 같음 |
+
+앱 설정 › 업데이트: 지금 버전 · 채널 · 받는 곳(GitHub 또는 서버) · 마지막 확인 시각과 결과 · [업데이트 확인]. 확인은 시작 30초 뒤와 6시간마다. 실행 · 녹화 · AI 대화가 진행 중이면 [다시 시작해서 업데이트] 가 먼저 묻는다(끊고 업데이트 / 끝나면 업데이트 — 끝나면 다시 알림, 저절로 다시 시작하지 않음). 실패는 조용히 다음 확인 때 다시. 프로젝트 · 금고 · 실행 기록은 업데이트로 바뀌지 않는다.
+
+euta cloud 가 이 앱 버전을 더 받지 않으면(`426 APP_TOO_OLD`) 클라우드 프로젝트가 "업데이트 필요" 로 잠긴다 — 보내기 대기분은 보관되고, 로컬 프로젝트 · 이 PC 실행은 그대로다. 잠금 화면의 [업데이트] 가 위 업데이트를 시작한다. 앱은 모든 클라우드 요청에 `X-Euta-App-Version` 을 보낸다.
+
 ## 프로젝트 (SPEC_프로젝트-관리 · ADR-016)
 
 테스트 대상 사이트마다 **프로젝트**를 만든다. 프로젝트에는 환경(dev·staging·prod 의 주소·변수·secrets), 스크립트 라이브러리, 스위트, 실행 이력, AI 대화, 작업 로그가 함께 저장되고 앱을 껐다 켜도 그대로다.
@@ -169,6 +211,9 @@ pnpm test:e2e       # 빌드 후 Playwright _electron — 프로젝트 생성→
                     #     →받기(조직 공개·두 번 받기 없음)→남의 프로젝트에 붙이기 거절→권한 요청→승인→실행 전용→접근 권한 없음 잠금→합치기(고르기·같은 내용)
                     #   + e2e/tc-docs.spec.ts: TC 문서로 만들기→미리보기 고치기→확정→검색+체크 순번→AI로 변환(테스트 에이전트)→2개 후 멈춤
                     #     →재시작→이어서 변환→분류별 테스트 세트→세트 실행(수동 확인 필요)→xlsx 내보내기·다시 읽기→시연으로 변환(TC 단계 안내)
+                    #   + e2e/update.spec.ts: 가짜 업데이트 서버(fake-cloud.ts)로 ad-hoc 맥 경로(알림·[내려받기]·[바뀐 것])
+                    #     →최소 버전 426 → 클라우드 "업데이트 필요" 잠금·로컬 실행 정상→업데이터 경로(준비됨·실행 중 확인·끝나면/끊고 업데이트)
+                    #     (EUTA_E2E_UPDATE_MODE=manual|auto · EUTA_UPDATE_SERVER — E2E 전용, 내려받기·설치는 기록만)
 pnpm verify         # 위 셋
 ```
 
@@ -176,6 +221,6 @@ E2E 는 앱을 띄워 엔진 예제 `widgets.yaml` 을 UI 로 실행 → Live �
 
 ## 알려진 한계
 
-- 패키징(dmg/exe, 서명, asar unpack — playwright·node-pty)은 아직 없다. `pnpm start` 는 빌드된 소스 트리를 실행한다.
-- Windows 는 코드상 고려(PATHEXT·`.cmd` shim 실행·ConPTY·PowerShell 기본 셸)만 했고 검증하지 않았다.
+- 맥은 ad-hoc 서명이라 앱 안 자동 설치가 없다(알림 + 내려받기). Developer ID 서명 경로는 설정만 있고 미검증.
+- Windows · Linux 설치 파일은 이 맥에서 교차 빌드한다 — 실제 기기에서 설치·실행·업데이트 1회 확인 전이다.
 - 실행 중단(취소) 버튼 없음 — core 에 중단 API 가 없다(ADR-008 공백과 같음).

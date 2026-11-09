@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Check, ShieldCheck, TriangleAlert } from 'lucide-react';
 import type { AppInfo, AppSettings, AppTheme, VaultStatus } from '../../../shared/types';
 import { CloudSettings } from './Cloud';
+import { UpdateSettings } from './Update';
 import { PageHeader, Tabs } from '../ui';
 
 const THEMES: { key: AppTheme; label: string }[] = [
@@ -81,6 +82,7 @@ export function AppSettingsTab() {
       </div>
       </div>
       <CloudSettings />
+      <UpdateSettings />
       <div className="card">
       <div className="form-row">
         <label>데이터 위치</label>

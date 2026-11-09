@@ -10,7 +10,7 @@ import { errText } from './ScriptsTab';
 import { Button, cx, Dialog, Switch } from '../ui';
 
 export const ROLE_LABEL: Record<string, string> = { owner: '소유자', editor: '편집자', runner: '실행자', viewer: '보기' };
-const STATE_LABEL: Record<string, string> = { none: '클라우드 미설정', signed_out: '로그인 필요', online: '연결됨', offline: '오프라인 (재시도 중)', login_required: '로그인 필요' };
+const STATE_LABEL: Record<string, string> = { none: '클라우드 미설정', signed_out: '로그인 필요', online: '연결됨', offline: '오프라인 (재시도 중)', login_required: '로그인 필요', app_too_old: '업데이트 필요' };
 
 /** Cloud connection status, kept fresh from main. */
 export function useCloudStatus(): CloudStatusView | undefined {

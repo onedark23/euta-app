@@ -161,4 +161,13 @@ export const IPC = {
   cloudMergePlan: 'cloud:merge-plan',
   cloudMergeApply: 'cloud:merge-apply',
   cloudRefreshAccess: 'cloud:refresh-access',
+  // stage 17 — app updates (SPEC 앱-배포-업데이트)
+  updateState: 'update:state',
+  /** Main → renderer: UpdateView changed. */
+  updateChanged: 'update:changed',
+  updateCheck: 'update:check',
+  updateRestart: 'update:restart',
+  updateWhenIdle: 'update:when-idle',
+  updateCancelWait: 'update:cancel-wait',
+  updateDownload: 'update:download',
 } as const;

@@ -140,6 +140,15 @@ const api: EutaApi = {
     shot: (projectId, id, rel) => invoke(IPC.recShot, projectId, id, rel),
     onUpdate: (fn) => subscribe(IPC.recUpdate, fn),
   },
+  update: {
+    state: () => invoke(IPC.updateState),
+    onChange: (fn) => subscribe(IPC.updateChanged, fn),
+    check: () => invoke(IPC.updateCheck),
+    restart: (force) => invoke(IPC.updateRestart, !!force),
+    whenIdle: () => invoke(IPC.updateWhenIdle),
+    cancelWait: () => invoke(IPC.updateCancelWait),
+    download: () => invoke(IPC.updateDownload),
+  },
   cloud: {
     status: () => invoke(IPC.cloudStatus),
     onStatus: (fn) => subscribe(IPC.cloudStatusChanged, fn),

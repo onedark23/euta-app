@@ -47,7 +47,7 @@ import { CloudAccount } from './account.js';
 import { CloudNotifier } from './notifications.js';
 import { CloudRuns } from './runs.js';
 import { CloudSchedules } from './schedules.js';
-import { CloudClient, CloudError, isNetworkError, normalizeServerUrl, type DeviceCode, type FetchLike } from './client.js';
+import { CloudClient, CloudError, isAppTooOld, isNetworkError, minVersionOf, normalizeServerUrl, type DeviceCode, type FetchLike } from './client.js';
 import { laterSaves, ProjectSync, type Outcome, type SyncApi, type SyncHost, type SyncNotice } from './sync.js';
 import type { CloudSnapshot, MergeBody, ProjectDto, ReceivableProjectDto, ScriptVersionDto } from './types.js';
 import { countRuns, moveLocalData } from './local-move.js';
@@ -79,9 +79,13 @@ export interface CloudServiceOptions {
   live?: LiveStore;
   /** App notifications on/off (앱 설정 > 클라우드). Default on. */
   notifyEnabled?: () => boolean;
+  /** This app's version — sent as X-Euta-App-Version on every request (API_CONTRACT 단계 17). */
+  appVersion?: string;
   /** Cloud-run cache budget (default 2 GB) and feed debounce — tests. */
   runs?: { cacheMaxBytes?: number; refreshDelayMs?: number };
 }
+
+const APP_TOO_OLD_TEXT = '앱 업데이트가 필요합니다 — euta cloud 가 이 앱 버전을 더 받지 않습니다 (앱 설정 → 업데이트)';
 
 const ROLE_NAME: Record<string, string> = { owner: '소유자', editor: '편집자', runner: '실행자', viewer: '보기' };
 const ORIGIN_ACTOR: Record<string, ScriptVersionView['actor']> = { app: 'user', web: 'user', ai_mcp: 'ai', external: 'external', revert: 'restore' };
@@ -117,6 +121,8 @@ export class CloudService implements CloudBridge {
   private client: CloudClient | undefined;
   private conn: CloudConnState;
   private lastError: string | undefined;
+  /** 426 APP_TOO_OLD: the version the server asked for. */
+  private minVersion: string | undefined;
   private loginState: { userCode: string; verificationUri: string; expiresAt: string; abort: AbortController } | undefined;
   private readonly syncs = new Map<string, ProjectSync>();
   private feed: { id: string; abort: AbortController } | undefined;
@@ -181,7 +187,7 @@ export class CloudService implements CloudBridge {
   }
 
   private newClient(url: string): CloudClient {
-    return new CloudClient(url, () => this.account.token(), this.o.fetch);
+    return new CloudClient(url, () => this.account.token(), this.o.fetch, this.o.appVersion);
   }
 
   /** Check the saved login (startup). */
@@ -209,6 +215,7 @@ export class CloudService implements CloudBridge {
       ...(this.loginState ? { login: { userCode: this.loginState.userCode, verificationUri: this.loginState.verificationUri, expiresAt: this.loginState.expiresAt } } : {}),
       pending: this.cloudIds().reduce((n, id) => n + this.wc(id).pending().length, 0),
       ...(this.lastError ? { lastError: this.lastError } : {}),
+      ...(this.conn === 'app_too_old' ? { minVersion: this.minVersion ?? null } : {}),
     };
   }
 
@@ -285,7 +292,7 @@ export class CloudService implements CloudBridge {
       if ('access_token' in r) {
         try {
           const token = r.access_token;
-          const me = await new CloudClient(client.baseUrl, () => token, this.o.fetch).me();
+          const me = await new CloudClient(client.baseUrl, () => token, this.o.fetch, this.o.appVersion).me();
           this.account.setToken(token, { id: me.id, email: me.email, name: me.name, ...(me.isAdmin ? { isAdmin: true } : {}) });
         } catch (e) {
           return done(`로그인 정보를 저장하지 못했습니다: ${(e as Error).message}`);
@@ -354,8 +361,16 @@ export class CloudService implements CloudBridge {
   private markOffline(e: unknown): void {
     if (this.disposed) return;
     const was = this.conn;
-    if (this.conn !== 'login_required') this.conn = 'offline';
-    this.lastError = (e as Error)?.message;
+    if (isAppTooOld(e)) {
+      // 426 APP_TOO_OLD: cloud projects lock as "업데이트 필요" until a newer app runs — no retry loop. Saves
+      // stay queued (outbox kept); local projects and this PC's runs are untouched.
+      this.conn = 'app_too_old';
+      this.minVersion = minVersionOf(e);
+      this.lastError = `euta cloud 가 이 앱 버전을 더 받지 않습니다${this.minVersion ? ` (최소 ${this.minVersion})` : ''} — 앱을 업데이트하세요`;
+    } else {
+      if (this.conn !== 'login_required' && this.conn !== 'app_too_old') this.conn = 'offline';
+      this.lastError = this.conn === 'app_too_old' ? this.lastError : (e as Error)?.message;
+    }
     this.stopFeed();
     this.notifier.stop();
     if (was !== this.conn) {
@@ -389,13 +404,17 @@ export class CloudService implements CloudBridge {
     const c = this.client;
     if (!c) throw new InputError('클라우드 서버가 설정되지 않았습니다 (앱 설정 → 클라우드)');
     if (!this.account.hasToken()) throw new InputError('클라우드에 로그인하세요 (앱 설정 → 클라우드)');
-    if (this.conn !== 'online') throw new InputError(this.conn === 'login_required' ? '로그인이 필요합니다 (앱 설정 → 클라우드)' : '오프라인 — 다시 연결된 뒤에 할 수 있습니다 (읽기만)');
+    if (this.conn !== 'online') throw new InputError(this.conn === 'login_required' ? '로그인이 필요합니다 (앱 설정 → 클라우드)' : this.conn === 'app_too_old' ? APP_TOO_OLD_TEXT : '오프라인 — 다시 연결된 뒤에 할 수 있습니다 (읽기만)');
     try {
       return await fn(c);
     } catch (e) {
       if (isNetworkError(e)) {
         this.markOffline(e);
         throw new InputError('클라우드에 연결할 수 없습니다 — 오프라인으로 전환합니다');
+      }
+      if (isAppTooOld(e)) {
+        this.markOffline(e);
+        throw new InputError(APP_TOO_OLD_TEXT);
       }
       if (e instanceof CloudError) {
         if (e.status === 401) {
@@ -559,7 +578,7 @@ export class CloudService implements CloudBridge {
         }
       } catch (e) {
         if (signal.aborted) return;
-        if (isNetworkError(e)) return this.markOffline(e);
+        if (isNetworkError(e) || isAppTooOld(e)) return this.markOffline(e);
         if (e instanceof CloudError && e.status === 401) return this.authLost();
         // 404 = gone or no longer visible to me (API_CONTRACT §6 — not told apart) → "접근 권한 없음".
         if (e instanceof CloudError && e.status === 404) return this.lockAccess(id);
@@ -630,6 +649,7 @@ export class CloudService implements CloudBridge {
       ...(snap?.project.birth ? { birth: { origin: snap.project.birth.origin, ...(snap.project.birth.createdBy ? { createdBy: snap.project.birth.createdBy.name } : {}), createdAt: snap.project.birth.createdAt } } : {}),
       online: this.online && p.cloud.serverUrl === this.account.serverUrl,
       needsLogin: !this.account.hasToken() || this.conn === 'login_required' || p.cloud.serverUrl !== this.account.serverUrl,
+      ...(this.conn === 'app_too_old' && p.cloud.serverUrl === this.account.serverUrl ? { appTooOld: { minVersion: this.minVersion ?? null } } : {}),
       pending: pending.length,
       testRules: snap?.project.testRules ?? '',
       ...(blocked ? { blocked: this.conflictView(id, blocked) } : {}),
@@ -647,7 +667,7 @@ export class CloudService implements CloudBridge {
     const wc = this.wc(id);
     const pending = wc.pending();
     const st = wc.state();
-    return { role: st.role, pending: pending.length, blocked: pending.some((e) => e.status !== 'queued'), ...(st.accessLost ? { accessLost: true } : {}) };
+    return { role: st.role, pending: pending.length, blocked: pending.some((e) => e.status !== 'queued'), ...(st.accessLost ? { accessLost: true } : {}), ...(this.conn === 'app_too_old' ? { appTooOld: true } : {}) };
   }
 
   scriptExtras(id: string): Record<string, NonNullable<ScriptEntry['cloud']>> {
@@ -696,7 +716,7 @@ export class CloudService implements CloudBridge {
       await this.sync(id).refreshSnapshot();
     } catch (e) {
       if (e instanceof CloudError && e.status === 404) this.lockAccess(id);
-      else if (isNetworkError(e)) this.markOffline(e);
+      else if (isNetworkError(e) || isAppTooOld(e)) this.markOffline(e);
       else if (e instanceof CloudError && e.status === 401) this.authLost();
       return;
     }

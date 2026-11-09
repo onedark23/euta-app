@@ -31,6 +31,26 @@ export class CloudNetworkError extends Error {
 
 export const isNetworkError = (e: unknown): e is CloudNetworkError => e instanceof CloudNetworkError;
 export const isAuthError = (e: unknown): boolean => e instanceof CloudError && e.status === 401;
+/** `426 APP_TOO_OLD` (API_CONTRACT 단계 17): the server wants a newer app. */
+export const isAppTooOld = (e: unknown): e is CloudError => e instanceof CloudError && e.status === 426;
+/** The minimum app version a 426 named (`{ code, minVersion }` or `{ error: { code, details: { minVersion } } }`). */
+export const minVersionOf = (e: CloudError): string | undefined => {
+  const d = e.details as { minVersion?: unknown } | undefined;
+  return typeof d?.minVersion === 'string' ? d.minVersion : undefined;
+};
+
+/** Every /api request and SSE connect says which app version is calling (API_CONTRACT 단계 17). */
+export const APP_VERSION_HEADER = 'x-euta-app-version';
+
+/** A non-OK response body → CloudError (both the `{ error: {…} }` shape and the bare 426 `{ code, minVersion }`). */
+function errorOf(status: number, statusText: string, json: unknown): CloudError {
+  const j = json as { error?: { code?: string; message?: string; details?: unknown }; code?: unknown; minVersion?: unknown } | undefined;
+  const err = j?.error;
+  const code = typeof err?.code === 'string' ? err.code : typeof j?.code === 'string' ? j.code : `HTTP_${status}`;
+  const details = err?.details ?? (typeof j?.minVersion === 'string' || j?.minVersion === null ? { minVersion: j.minVersion } : undefined);
+  const message = typeof err?.message === 'string' ? err.message : status === 426 ? '앱 업데이트가 필요합니다' : statusText || `HTTP ${status}`;
+  return new CloudError(status, code, message, details);
+}
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -68,13 +88,19 @@ export class CloudClient {
     readonly baseUrl: string,
     private readonly token: () => string | undefined,
     fetchFn?: FetchLike,
+    private readonly appVersion?: string,
   ) {
     this.fetchFn = fetchFn ?? ((url, init) => fetch(url, init));
   }
 
   private headers(json: boolean): Record<string, string> {
     const t = this.token();
-    return { accept: 'application/json', ...(json ? { 'content-type': 'application/json' } : {}), ...(t ? { authorization: `Bearer ${t}` } : {}) };
+    return {
+      accept: 'application/json',
+      ...(json ? { 'content-type': 'application/json' } : {}),
+      ...(t ? { authorization: `Bearer ${t}` } : {}),
+      ...(this.appVersion ? { [APP_VERSION_HEADER]: this.appVersion } : {}),
+    };
   }
 
   private async send(method: string, path: string, body?: unknown, signal?: AbortSignal, raw?: { body?: Uint8Array; contentType?: string; timeoutMs?: number }): Promise<Response> {
@@ -106,10 +132,10 @@ export class CloudClient {
       json = undefined;
     }
     if (!res.ok) {
-      const err = (json as { error?: { code?: string; message?: string; details?: unknown } } | undefined)?.error;
+      const err = (json as { error?: unknown } | undefined)?.error;
       // A proxy / gateway error page means the server itself is not there.
       if (!err && (res.status === 502 || res.status === 503 || res.status === 504)) throw new CloudNetworkError(`euta cloud 응답 없음 (${res.status})`);
-      throw new CloudError(res.status, typeof err?.code === 'string' ? err.code : `HTTP_${res.status}`, typeof err?.message === 'string' ? err.message : res.statusText || `HTTP ${res.status}`, err?.details);
+      throw errorOf(res.status, res.statusText, json);
     }
     return json as T;
   }
@@ -377,10 +403,7 @@ export class CloudClient {
     } catch (e) {
       throw new CloudNetworkError(`${label}: ${(e as Error).message}`);
     }
-    if (!res.ok || !res.body) {
-      const j = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } };
-      throw new CloudError(res.status, j.error?.code ?? `HTTP_${res.status}`, j.error?.message ?? `HTTP ${res.status}`);
-    }
+    if (!res.ok || !res.body) throw errorOf(res.status, `HTTP ${res.status}`, await res.json().catch(() => ({})));
     const parser = new SseParser();
     const decoder = new TextDecoder();
     const reader = res.body.getReader();

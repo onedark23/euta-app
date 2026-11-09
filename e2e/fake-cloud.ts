@@ -6,6 +6,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { scriptHash } from '@euta/core';
+import { compareVersions } from '../src/shared/app-version.js';
 
 type Role = 'owner' | 'editor' | 'runner' | 'viewer';
 const CAN: Record<Role, string[]> = {
@@ -86,6 +87,15 @@ export class FakeCloud {
   private userEventId = 1;
   /** Requests seen (method path) — tests assert on them. */
   readonly log: string[] = [];
+  /** Stage 17: MIN_APP_VERSION — device-token /api requests from an older app (or without the header) get 426. */
+  minVersion: string | undefined;
+  /** X-Euta-App-Version per device-token request: `METHOD path → version` (header missing = '-'). */
+  readonly appVersions: string[] = [];
+  /** `GET /api/config` `appUpdates` (ADR-047). */
+  appUpdates = true;
+    /** Stage 17: the public update files (`/updates/<channel>/<name>` → body) and `/api/app/releases` answer. */
+  readonly updateFiles = new Map<string, string>();
+  appReleases: { channel: string; releases: unknown[] } = { channel: 'alpha', releases: [] };
 
   addUser(email: string, name: string): User {
     const u = { id: randomUUID(), email, name };
@@ -300,9 +310,24 @@ export class FakeCloud {
       return c?.token ? this.json(res, 200, { access_token: c.token }) : this.json(res, 400, { error: 'authorization_pending' });
     }
     if (path === '/api/auth/sign-out') return this.json(res, 200, {});
+    // Public update routes (no login, no version check — API_CONTRACT 단계 17).
+    if (path.startsWith('/updates/')) {
+      const f = this.updateFiles.get(path);
+      if (f === undefined) return this.err(res, 404, 'NOT_FOUND', 'no such update file');
+      res.writeHead(200, { 'content-type': path.endsWith('.yml') ? 'text/yaml' : 'application/octet-stream', 'cache-control': 'no-store' });
+      return void res.end(f);
+    }
+    if (path === '/api/app/releases') return this.json(res, 200, this.appReleases);
+    // Public config (ADR-047): this fake distributes app updates → the app's update source is this server.
+    if (path === '/api/config') return this.json(res, 200, { signUpMode: 'approval', allowedEmailDomains: [], microsoftLogin: false, appUpdates: this.appUpdates });
     const auth = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1];
     const userId = auth ? this.tokens.get(auth) : undefined;
     if (!userId) return this.err(res, 401, 'UNAUTHENTICATED', 'sign in');
+    const appVersion = req.headers['x-euta-app-version'] as string | undefined;
+    this.appVersions.push(`${m} ${path} → ${appVersion ?? '-'}`);
+    if (this.minVersion && (!appVersion || compareVersions(appVersion, this.minVersion) < 0)) {
+      return this.json(res, 426, { code: 'APP_TOO_OLD', minVersion: this.minVersion, error: { code: 'APP_TOO_OLD', message: 'update the app' } });
+    }
     const me = this.users.get(userId)!;
     if (path === '/api/me') return this.json(res, 200, { id: me.id, email: me.email, name: me.name, isAdmin: false });
     if (path === '/api/me/events') {

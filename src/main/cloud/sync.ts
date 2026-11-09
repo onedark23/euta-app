@@ -7,7 +7,7 @@
 // Every operation runs on one serial chain per project, so feed events, sends and conflict
 // resolution never interleave.
 import { scriptHash } from '@euta/core';
-import { CloudError, isNetworkError } from './client.js';
+import { CloudError, isAppTooOld, isNetworkError } from './client.js';
 import type { CloudSnapshot, EnvironmentDto, FeedEvent, ProjectDto, ScriptDto, ScriptVersionDto, SuiteDto } from './types.js';
 import type { PendingEntry, ServerCurrent, WorkingCopy } from './workcopy.js';
 
@@ -162,7 +162,8 @@ export class ProjectSync {
       this.settle(e.ticket, { kind: 'saved', version: r.script.version, unchanged: r.unchanged });
       return 'sent';
     } catch (err) {
-      if (isNetworkError(err)) {
+      // 426 APP_TOO_OLD: like offline — the save stays queued until a newer app sends it.
+      if (isNetworkError(err) || isAppTooOld(err)) {
         this.host.offline(err);
         return 'offline';
       }
@@ -220,7 +221,7 @@ export class ProjectSync {
             this.host.changed();
             return again;
           }
-          if (isNetworkError(err)) this.host.offline(err);
+          if (isNetworkError(err) || isAppTooOld(err)) this.host.offline(err);
           throw err;
         }
       } else if (choice === 'theirs' && e.status === 'rejected' && this.laterFor(e)) {

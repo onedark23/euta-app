@@ -1,4 +1,6 @@
 import type {
+  UpdateRestartResult,
+  UpdateView,
   ActivityEvent,
   ActivityQuery,
   AiInfo,
@@ -233,6 +235,19 @@ export interface EutaApi {
     /** Masked step screenshot as a data URL. */
     shot(projectId: string, id: string, rel: string): Promise<string | undefined>;
     onUpdate(fn: (v: RecordingView) => void): () => void;
+  };
+  /** App updates (SPEC 앱-배포-업데이트): check, restart to install, installer download (ad-hoc Mac). */
+  update: {
+    state(): Promise<UpdateView>;
+    onChange(fn: (v: UpdateView) => void): () => void;
+    check(): Promise<UpdateView>;
+    /** force = "끊고 업데이트"; otherwise the busy work comes back when something would be cut off. */
+    restart(force?: boolean): Promise<UpdateRestartResult>;
+    /** "끝나면 업데이트". */
+    whenIdle(): Promise<UpdateView>;
+    cancelWait(): Promise<UpdateView>;
+    /** [내려받기]: the installer in the system browser. */
+    download(): Promise<boolean>;
   };
   /** euta cloud (SPEC 클라우드-앱-연동). The device token stays in main; values are write-only. */
   cloud: {

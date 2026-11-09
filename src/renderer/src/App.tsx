@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Cloud, Download, Folder, Lock, Plus, Settings } from 'lucide-react';
+import { Cloud, Download, Folder, Lock, Plus, RefreshCw, Settings } from 'lucide-react';
 import logo from '../../../build/icon.svg';
 import type { CloudConflictView, CloudConvertResult, CloudNotice, ProjectSummary, ProjectView, RecordingView, RunListItem, RunView, SuiteRun } from '../../shared/types';
 import { CloudChip, ConflictDialog, ROLE_LABEL, useCloudStatus } from './tabs/Cloud';
@@ -14,6 +14,7 @@ import { ActivityTab } from './tabs/ActivityTab';
 import { ProjectSettingsTab } from './tabs/ProjectSettingsTab';
 import { AppSettingsTab } from './tabs/SettingsTab';
 import { RecordingPanel, RecordStartDialog } from './tabs/RecordingPanel';
+import { UpdateBanner, useUpdateActions } from './tabs/Update';
 import { confirmLeave } from './unsaved';
 import { Badge, Button, cx, PageHeader, Tabs } from './ui';
 
@@ -83,6 +84,27 @@ function NewProject({ onCreated, first }: { onCreated: (p: ProjectView) => void;
       {error && <div className="error">{error}</div>}
       </div>
     </div>
+  );
+}
+
+/** Cloud project locked by 426 APP_TOO_OLD (SPEC 앱-배포-업데이트 "최소 앱 버전"). */
+function UpdateNeededPanel({ pending, minVersion }: { pending: number; minVersion: string | null }) {
+  const a = useUpdateActions();
+  return (
+    <section className="panel" data-testid="cloud-update-needed">
+      <div className="card">
+        <h3>앱을 업데이트해야 이 클라우드 프로젝트를 열 수 있습니다</h3>
+        <p className="muted">
+          euta cloud 가 이 앱 버전을 더 받지 않습니다{minVersion ? ` (최소 ${minVersion})` : ''}. 작업 사본은 이 PC 에 남아 있고
+          {pending ? ` 보내기 대기 ${pending}건도 그대로 보관합니다 — 업데이트한 뒤 보냅니다` : ' 지워지지 않습니다'}. 로컬 프로젝트와 이 PC 실행은 그대로 쓸 수 있습니다.
+        </p>
+        <Button variant="primary" icon={RefreshCw} onClick={() => void a.updateNow()} data-testid="cloud-update-button">
+          업데이트
+        </Button>
+        {a.error && <div className="error">{a.error}</div>}
+      </div>
+      {a.dialogs}
+    </section>
   );
 }
 
@@ -308,6 +330,11 @@ export function App() {
         <Folder className="nav-icon" size={16} aria-hidden="true" />
       )}
       <span className="name">{p.name}</span>
+      {p.cloud?.appTooOld && (
+        <Badge tone="warn" data-testid="project-update-needed" title="euta cloud 가 이 앱 버전을 더 받지 않습니다 — 앱을 업데이트하세요">
+          업데이트 필요
+        </Badge>
+      )}
       {p.cloud && p.cloud.pending > 0 && (
         <Badge tone={p.cloud.blocked ? 'bad' : 'warn'} data-testid="project-pending" title={p.cloud.blocked ? '충돌 — 해결이 필요합니다' : '보내기 대기'}>
           {p.cloud.blocked ? '충돌' : `대기 ${p.cloud.pending}`}
@@ -363,6 +390,7 @@ export function App() {
         </div>
       </aside>
       <div className="main">
+        <UpdateBanner />
         {view === 'app-settings' ? (
           <section className="panel">
             <AppSettingsTab />
@@ -385,7 +413,12 @@ export function App() {
                 {project.name}
               </span>
               <RoleBadges project={project} onChanged={setProject} />
-              {project.cloudView && !project.cloudView.online && !project.cloudView.needsLogin && (
+              {project.cloudView?.appTooOld && (
+                <Badge tone="warn" data-testid="update-needed-badge" title="euta cloud 가 이 앱 버전을 더 받지 않습니다 — 앱을 업데이트하세요">
+                  업데이트 필요
+                </Badge>
+              )}
+              {project.cloudView && !project.cloudView.online && !project.cloudView.needsLogin && !project.cloudView.appTooOld && (
                 <Badge tone="warn" data-testid="offline-badge" title="환경·테스트 계정·테스트 세트·구성원은 읽기만 · 스크립트 저장은 보내기 대기">
                   오프라인
                 </Badge>
@@ -403,7 +436,9 @@ export function App() {
                 onSelect={(k) => setTab(k as Tab)}
               />
             </header>
-            {project.cloudView?.needsLogin ? (
+            {project.cloudView?.appTooOld ? (
+              <UpdateNeededPanel pending={project.cloudView.pending} minVersion={project.cloudView.appTooOld.minVersion} />
+            ) : project.cloudView?.needsLogin ? (
               <section className="panel" data-testid="cloud-needs-login">
                 <div className="card">
                 <h3>클라우드에 로그인해야 이 프로젝트를 열 수 있습니다</h3>

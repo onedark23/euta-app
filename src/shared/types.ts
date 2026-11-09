@@ -416,7 +416,7 @@ export interface ProjectSummary {
   /** Runs of this project currently running (Live). */
   running: number;
   /** Cloud project: role, unsent saves, a blocked save (conflict). */
-  cloud?: { role: CloudRole; pending: number; blocked: boolean; accessLost?: boolean };
+  cloud?: { role: CloudRole; pending: number; blocked: boolean; accessLost?: boolean; appTooOld?: boolean };
 }
 
 /** Environment as shown in the UI: the secret names come from the vault or the external file. */
@@ -443,7 +443,8 @@ export interface ProjectView extends Omit<Project, 'environments'> {
 // ---- euta cloud (SPEC 클라우드-앱-연동, ADR-025) ----
 
 export type CloudRole = 'owner' | 'editor' | 'runner' | 'viewer';
-export type CloudConnState = 'none' | 'signed_out' | 'online' | 'offline' | 'login_required';
+/** app_too_old: the server answered 426 APP_TOO_OLD — cloud projects locked as "업데이트 필요" (SPEC 앱-배포-업데이트). */
+export type CloudConnState = 'none' | 'signed_out' | 'online' | 'offline' | 'login_required' | 'app_too_old';
 
 export interface CloudStatusView {
   /** Configured server address ('' = none). */
@@ -455,6 +456,8 @@ export interface CloudStatusView {
   /** Unsent saves across all cloud projects. */
   pending: number;
   lastError?: string;
+  /** app_too_old: the minimum app version the server named (null = not given). */
+  minVersion?: string | null;
 }
 
 export interface ProjectCloudView {
@@ -479,6 +482,8 @@ export interface ProjectCloudView {
   online: boolean;
   /** Signed out / token rejected: the working copy stays but needs a login to open. */
   needsLogin: boolean;
+  /** 426 APP_TOO_OLD: locked as "업데이트 필요" (the outbox is kept). */
+  appTooOld?: { minVersion: string | null };
   pending: number;
   testRules: string;
   /** The save the queue stopped at (conflict or rejected). */
@@ -632,6 +637,36 @@ export interface VaultStatus {
   /** Why storing is refused (shown as a warning). */
   reason?: string;
 }
+
+// ---- app updates (SPEC 앱-배포-업데이트) ----
+
+/** Work an update restart would cut off (SPEC "실행 중 보호"). */
+export interface BusyWork {
+  /** This PC's runs in progress (app, test sets, AI, terminal MCP — not cloud runs). */
+  runs: number;
+  recording: boolean;
+  /** Projects whose AI chat is answering. */
+  chats: number;
+}
+
+export interface UpdateView {
+  /** This app's version and its channel (prerelease name). */
+  version: string;
+  channel: string;
+  /** auto = download in the background, then restart · manual = notice + installer download · off = development run. */
+  mode: 'auto' | 'manual' | 'off';
+  /** Where the last check looked (ADR-047): "GitHub Releases" or the connected cloud server's address. */
+  source?: string;
+  checking: boolean;
+  lastCheck?: { at: string; result: 'latest' | 'available' | 'error'; message?: string };
+  /** A newer version. `ready`: downloaded, installs on [다시 시작해서 업데이트] (or when the app quits). */
+  available?: { version: string; notes?: string; ready: boolean; downloadUrl?: string };
+  /** "끝나면 업데이트" chosen: waiting for this PC's work to finish (then the notice asks again). */
+  waiting?: boolean;
+}
+
+/** [다시 시작해서 업데이트] result: restarting, or the work it would cut off (ask first). */
+export type UpdateRestartResult = { restarting: true } | { restarting: false; busy: BusyWork };
 
 export type SuiteItemStatus = 'pending' | 'running' | 'passed' | 'failed' | 'error' | 'skipped';
 

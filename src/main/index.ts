@@ -20,6 +20,10 @@ import type { SdkModule } from './ai/chat-engine.js';
 import { fakeQuery } from './ai/fake-agent.js';
 import { ProjectService } from './project/service.js';
 import { applyTheme } from './project/app-state.js';
+import { channelOf, updateMode, type UpdateMode } from '../shared/app-version.js';
+import { AppUpdater, type UpdaterBackend } from './updater.js';
+import { electronUpdaterBackend } from './update-backend.js';
+import { resolveUpdateSource } from './update-source.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -30,6 +34,9 @@ let mainWindow: BrowserWindow | undefined;
 let server: LocalServer | undefined;
 let projects: ProjectService | undefined;
 let cloud: CloudService | undefined;
+let updater: AppUpdater | undefined;
+/** E2E: [다시 시작해서 업데이트] requests (the real install quits the app). */
+let installRequests = 0;
 /** E2E: the device-approval URL the app would have opened in the browser. */
 let lastExternalUrl: string | undefined;
 /** App notifications shown (E2E reads them — OS notifications are not observable from Playwright). */
@@ -183,6 +190,12 @@ function registerIpc(): void {
     versions: { electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome },
   }));
   handle(IPC.appSettingsGet, () => svc().appSettings());
+  handle(IPC.updateState, () => updater?.state());
+  handle(IPC.updateCheck, () => updater?.check());
+  handle(IPC.updateRestart, (force) => updater?.restart(force === true));
+  handle(IPC.updateWhenIdle, () => updater?.restartWhenIdle());
+  handle(IPC.updateCancelWait, () => updater?.stopWaiting());
+  handle(IPC.updateDownload, () => updater?.openDownload() ?? false);
   handle(IPC.appSettingsSet, (patch) => {
     const before = svc().appSettings().cloudNotify;
     const next = svc().updateAppSettings(patch);
@@ -509,6 +522,47 @@ function openNotification(v: CloudNotificationView): void {
   send(IPC.cloudOpenRun, v);
 }
 
+/** How this build was signed (`eutaBuild` in the packaged package.json — scripts/package.mjs). */
+function buildInfo(): { macSignature?: string } {
+  try {
+    const pkg = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')) as { eutaBuild?: { macSignature?: string } };
+    return pkg.eutaBuild ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * App updates (SPEC 앱-배포-업데이트, ADR-042). E2E (EUTA_E2E=1 + EUTA_E2E_UPDATE_MODE=auto|manual) forces the
+ * path on the unpackaged app: `auto` checks the fake feed with electron-updater for real, the download and
+ * the install are stubbed (an unsigned development app cannot install).
+ */
+function createUpdater(): AppUpdater {
+  const version = app.getVersion();
+  const channel = channelOf(version);
+  const forced = process.env.EUTA_E2E === '1' && ['auto', 'manual'].includes(process.env.EUTA_E2E_UPDATE_MODE ?? '') ? (process.env.EUTA_E2E_UPDATE_MODE as UpdateMode) : undefined;
+  const mode = forced ?? updateMode({ platform: process.platform, packaged: app.isPackaged, macSignature: buildInfo().macSignature, appImage: !!process.env.APPIMAGE });
+  // The connected cloud server, if any (EUTA_UPDATE_SERVER overrides it — development / E2E only).
+  const serverUrl = (): string | undefined => process.env.EUTA_UPDATE_SERVER || cloud?.status().serverUrl || undefined;
+  let backend: UpdaterBackend | undefined;
+  if (mode === 'auto') {
+    const real = electronUpdaterBackend({ dev: !!forced });
+    backend = forced ? { setFeed: (u) => real.setFeed(u), check: () => real.check(), download: async () => undefined, install: () => void installRequests++ } : real;
+  }
+  return new AppUpdater({
+    version,
+    channel,
+    mode,
+    platform: process.platform,
+    arch: process.arch,
+    source: () => resolveUpdateSource({ serverUrl: serverUrl(), channel, version, fetch: (u, init) => fetch(u, init) }),
+    ...(backend ? { backend } : {}),
+    busy: () => projects?.busyWork() ?? { runs: 0, recording: false, chats: 0 },
+    emit: (v) => send(IPC.updateChanged, v),
+    openExternal: openExternalUrl,
+  });
+}
+
 /** System browser for the device-approval page (http(s) only). E2E records it instead. */
 function openExternalUrl(url: string): void {
   if (!/^https?:\/\//i.test(url)) return;
@@ -589,6 +643,7 @@ app.whenReady().then(async () => {
     live,
     openExternal: openExternalUrl,
     notifyEnabled: () => projects?.appSettings().cloudNotify ?? true,
+    appVersion: app.getVersion(),
     events: {
       status: (v) => send(IPC.cloudStatusChanged, v),
       notice: (n) => send(IPC.cloudNotice, n),
@@ -620,6 +675,7 @@ app.whenReady().then(async () => {
   );
   live.onUpdate((v) => send(IPC.liveUpdate, v));
   hooks.onUpdate((s) => send(IPC.hooksUpdate, s));
+  updater = createUpdater();
   registerIpc();
 
   if (process.env.EUTA_E2E === '1') {
@@ -635,6 +691,8 @@ app.whenReady().then(async () => {
       claudeExecutable: claudeExecutableForAgent(),
       recorderPage: () => projects?.activeRecorderPage(),
       cloud,
+      updater,
+      installRequests: () => installRequests,
       lastExternalUrl: () => lastExternalUrl,
       notifications: () => notifications.slice(),
       /** What a click on notification `i` does (open the project and the run). */
@@ -646,6 +704,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+  updater.start();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -657,6 +716,7 @@ app.on('will-quit', () => {
   ptys?.killAll();
   auth.dispose();
   cloud?.dispose();
+  updater?.dispose();
   void projects?.dispose(); // watchers; aborts chat turns; AI-opened browser sessions are closed best-effort
   live.dispose();
   if (server) {

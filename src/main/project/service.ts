@@ -8,6 +8,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from 'node:p
 import { checkTargets, openRecorder, recordingToScript, Redactor, rewriteScript, runScript, scriptHash, slugify, validateScript, type Recorder, type RecorderView, type Recording, type RunHandle, type ScriptEdit } from '@euta/core';
 import type { Page } from 'playwright';
 import type {
+  BusyWork,
   ActivityActor,
   ActivityEvent,
   ActivityQuery,
@@ -314,6 +315,13 @@ export class ProjectService {
     if (settings.length) this.log(id, 'settings.changed', 'user', `프로젝트 설정 변경: ${settings.map((k) => (k === 'browser' ? `browser=${project.browser.engine}${project.browser.device ? `/${project.browser.device}` : ''}${project.browser.headless ? ' headless' : ' headed'}` : `기본 환경=${project.environments.find((e) => e.id === project.defaultEnvId)?.name ?? '-'}`)).join(', ')}`);
     if (changed.length) this.ev.projectsChanged?.();
     return this.view(id);
+  }
+
+  /** This PC's work an app restart would cut off (SPEC 앱-배포-업데이트 "실행 중 보호"). */
+  busyWork(): BusyWork {
+    const runs = this.live.list().filter((r) => r.status === 'running' && r.source !== 'cloud').length;
+    const chats = [...this.chats.values()].filter((c) => c.busy()).length;
+    return { runs, recording: !!this.rec && !this.rec.recorder.isStopped, chats };
   }
 
   /** Why the project cannot be deleted right now, or undefined. */

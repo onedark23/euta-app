@@ -11,6 +11,7 @@ import { compactId, WorkingCopy } from '../../src/main/cloud/workcopy.js';
 import { LiveStore } from '../../src/main/live-store.js';
 import { ProjectService } from '../../src/main/project/service.js';
 import { toModel, toPayload } from '../../src/shared/script-model.js';
+import { compareVersions } from '../../src/shared/app-version.js';
 import { allFiles, mockSafeStorage } from './helpers.js';
 
 const TOKEN = 'device-session-token-SECRET-0123456789';
@@ -41,6 +42,10 @@ class FakeCloud {
   /** Server suites; `alwaysRun` absent = a server from before ADR-031. */
   suites: { id: string; name: string; scriptIds: string[]; alwaysRun?: string[] }[] = [];
   suiteBodies: Record<string, unknown>[] = [];
+  /** MIN_APP_VERSION (stage 17): device-token requests from an older app → 426 APP_TOO_OLD. */
+  minVersion: string | undefined;
+  /** X-Euta-App-Version of every request (undefined = header missing). */
+  appVersions: (string | undefined)[] = [];
 
   fetch = async (url: string, init: RequestInit): Promise<Response> => {
     if (this.down) throw new TypeError('fetch failed');
@@ -53,6 +58,9 @@ class FakeCloud {
     if (p === '/api/auth/device/code') return ok({ device_code: 'dc-1', user_code: 'ABCD-EFGH', verification_uri: 'http://cloud.test/device', verification_uri_complete: 'http://cloud.test/device?user_code=ABCD-EFGH', expires_in: 900, interval: 1 });
     if (p === '/api/auth/device/token') return this.approved ? ok({ access_token: TOKEN }) : ok({ error: 'authorization_pending' }, 400);
     if (auth !== `Bearer ${TOKEN}`) return ok({ error: { code: 'UNAUTHENTICATED', message: 'sign in' } }, 401);
+    const appVersion = (init.headers as Record<string, string>)['x-euta-app-version'];
+    this.appVersions.push(appVersion);
+    if (this.minVersion && (!appVersion || compareVersions(appVersion, this.minVersion) < 0)) return ok({ code: 'APP_TOO_OLD', minVersion: this.minVersion }, 426);
     if (p === '/api/me') return ok({ id: 'u-me', email: 'me@example.com', name: '나', isAdmin: false });
     const base = `/api/projects/${PID}`;
     if (p === base) return ok({ id: PID, name: 'Shared Portal', description: 'cloud', browser: { engine: 'chromium' }, testRules: '게시 금지', defaultEnvironmentId: ENV, myRole: this.role, can: this.role === 'viewer' ? ['project.view'] : ['project.view', 'script.edit', 'credential.write'], updatedAt: '' });
@@ -128,7 +136,7 @@ describe('CloudService (fake cloud)', () => {
 
   const make = () => {
     svc = new ProjectService({ userData, safeStorage: ss, live, watch: false, platform: 'darwin' });
-    cloud = new CloudService({ userData, safeStorage: ss, projects: svc, fetch: fake.fetch, openExternal: (u) => opened.push(u), retry: { min: 50, max: 100 } });
+    cloud = new CloudService({ userData, safeStorage: ss, projects: svc, fetch: fake.fetch, openExternal: (u) => opened.push(u), retry: { min: 50, max: 100 }, appVersion: '0.1.0-alpha.1' });
   };
 
   beforeAll(() => {
@@ -251,6 +259,36 @@ describe('CloudService (fake cloud)', () => {
     expect(() => svc.writeScript(id, 'login.yaml', SCRIPT('x'), 'user')).toThrow(/보기 전용/);
     fake.role = 'editor';
     await cloud.resync(id);
+  });
+
+  it('426 APP_TOO_OLD: cloud projects lock as "업데이트 필요", saves stay queued, local projects unaffected', async () => {
+    expect(fake.appVersions.length).toBeGreaterThan(0);
+    expect(fake.appVersions.every((v) => v === '0.1.0-alpha.1')).toBe(true); // every /api request and the SSE connect
+    fake.minVersion = '0.1.0-alpha.2';
+    await cloud.probe();
+    expect(cloud.status()).toMatchObject({ state: 'app_too_old', minVersion: '0.1.0-alpha.2' });
+    expect(cloud.status().lastError).toContain('0.1.0-alpha.2');
+    expect(svc.view(id).cloudView).toMatchObject({ online: false, appTooOld: { minVersion: '0.1.0-alpha.2' } });
+    expect(svc.list().find((p) => p.id === id)?.cloud?.appTooOld).toBe(true);
+    // The outbox is kept (no retry loop, nothing dropped).
+    const r = svc.writeScript(id, 'login.yaml', SCRIPT('Login', '/login?old=1'), 'user');
+    expect(!r.conflict && (await r.cloud!.outcome)).toEqual({ kind: 'queued', reason: 'offline' });
+    expect(cloud.status().pending).toBe(1);
+    await expect(cloud.upsertSuite(id, undefined, { name: 'x', scripts: [] })).rejects.toThrow(/앱 업데이트가 필요합니다/);
+    const puts = fake.puts.length;
+    await new Promise((res) => setTimeout(res, 300));
+    expect(fake.puts.length).toBe(puts);
+    expect(cloud.status().state).toBe('app_too_old');
+    // Local projects keep working.
+    const local = svc.create({ name: 'Local while locked' });
+    expect(svc.writeScript(local.id, 'a.yaml', SCRIPT('A'), 'user', { exclusive: true, kind: 'create' }).conflict).toBeFalsy();
+    expect(svc.readLocalScript(local.id, 'a.yaml')).toBe(SCRIPT('A'));
+    await svc.delete(local.id);
+    // A newer app (here: the server lowers the minimum) → the queued save goes out.
+    fake.minVersion = undefined;
+    await cloud.probe();
+    await until(() => cloud.status().state === 'online' && cloud.status().pending === 0, 5000);
+    expect(fake.puts.at(-1)).toMatch(/^login\.yaml@/);
   });
 
   it('restart keeps the working copy; no token or credential value in plaintext under userData', async () => {

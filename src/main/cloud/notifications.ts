@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CloudNotificationView } from '../../shared/types.js';
 import { writeTextAtomic } from '../project/fsx.js';
-import { CloudError, isNetworkError, type CloudClient } from './client.js';
+import { CloudError, isAppTooOld, isNetworkError, type CloudClient } from './client.js';
 import type { AccessEventData, UserEventDto } from './types.js';
 import { compactId } from './workcopy.js';
 
@@ -135,7 +135,7 @@ export class CloudNotifier {
         }
       } catch (e) {
         if (signal.aborted) break;
-        if (isNetworkError(e)) {
+        if (isNetworkError(e) || isAppTooOld(e)) {
           this.stop();
           this.o.offline(e);
           return;
