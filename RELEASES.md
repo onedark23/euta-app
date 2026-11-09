@@ -1,10 +1,10 @@
 # euta 릴리스 노트
 
 버전마다 `## <버전>` 아래에 "바뀐 것" 몇 줄을 쓴다. 앱 업데이트 안내의 [바뀐 것] 과 euta cloud "앱 내려받기" 화면에 그대로 보인다
-(`pnpm release` 가 업데이트 정보 파일에, `pnpm release:upload` 가 서버 릴리스 노트에 넣는다). 최신 버전을 맨 위에 둔다.
+(`pnpm release` 가 업데이트 정보 파일에, `pnpm release:github` · `pnpm release:upload` 가 릴리스 노트에 넣는다). 최신 버전을 맨 위에 둔다.
 
 ## 0.1.0-alpha.1
 
-- 사내 첫 배포(알파). macOS(Apple 칩 · Intel) · Windows · Linux(AppImage) 설치 파일.
-- 앱 안에서 새 버전 확인 — 앱 설정 › 업데이트에서 지금 버전 · 마지막 확인을 보고 [업데이트 확인] 을 누를 수 있다.
+- 첫 배포(알파). macOS(Apple 칩 · Intel) · Windows · Linux(AppImage) 설치 파일.
+- 앱 안에서 새 버전 확인 — 앱 설정 › 업데이트에서 지금 버전 · 받는 곳(연결한 euta cloud 가 앱을 배포하면 그 서버, 아니면 GitHub) · 마지막 확인을 보고 [업데이트 확인] 을 누를 수 있다.
 - euta cloud 가 이 앱 버전을 더 받지 않으면 클라우드 프로젝트를 "업데이트 필요" 로 잠근다(로컬 프로젝트 · 이 PC 실행은 그대로).
