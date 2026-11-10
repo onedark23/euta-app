@@ -57,7 +57,11 @@ const OS = {
 const hostOs = process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'win' : 'linux';
 const picked = ['mac', 'win', 'linux'].filter((o) => args.includes(`--${o}`));
 const targets = release ? (picked.length ? picked : ['mac', 'win', 'linux']) : [hostOs];
-if (release && process.platform !== 'darwin') throw new Error('release builds run on macOS (they cross-build Windows and Linux)');
+// Release builds run on macOS (they cross-build Windows, and Linux in Docker); a Linux host builds Linux only
+// (the GitHub Actions Ubuntu runner — ADR-048).
+if (release && process.platform !== 'darwin' && !(process.platform === 'linux' && targets.every((t) => t === 'linux'))) {
+  throw new Error('release builds run on macOS (they cross-build Windows and Linux); a Linux host builds --linux only');
+}
 
 const macSign = release && process.env.EUTA_MAC_SIGN === 'developer-id' ? 'developer-id' : 'adhoc';
 const version = appPkg.version;
@@ -153,6 +157,15 @@ function packageTarget(os) {
       '-e', 'npm_config_disturl=https://electronjs.org/headers',
       DOCKER_IMAGE, 'npm', ...npmArgs,
     ], appDir);
+    const pty = join(stage, 'node_modules/node-pty/build/Release/pty.node');
+    if (!existsSync(pty)) throw new Error(`node-pty was not compiled for linux: ${pty} missing`);
+  } else if (platform === 'linux') {
+    // Linux host (CI): the same compile, here — needs python3 · make · g++ (present on GitHub's Ubuntu runners).
+    run('npm', npmArgs, stage, {
+      npm_config_runtime: 'electron',
+      npm_config_target: electronVersion,
+      npm_config_disturl: 'https://electronjs.org/headers',
+    });
     const pty = join(stage, 'node_modules/node-pty/build/Release/pty.node');
     if (!existsSync(pty)) throw new Error(`node-pty was not compiled for linux: ${pty} missing`);
   } else {

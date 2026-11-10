@@ -1,0 +1,120 @@
+# App release (SPEC 앱-배포-업데이트 "버전 · 릴리스", ADR-048): push the tag app-v<version> → build on GitHub's
+# runners → publish the GitHub release. macOS runner = mac arm64 · x64 + Windows x64 (cross-built, as on a dev Mac),
+# Ubuntu runner = Linux x64 (node-pty compiled in place). The engine is checked out next to the app (link:../euta-engine).
+# Manual run: build only by default (publish = false) — a dry run of the whole build.
+name: Release
+
+on:
+  push:
+    tags: ['app-v*']
+  workflow_dispatch:
+    inputs:
+      engine_ref:
+        description: euta-engine ref to build with
+        default: main
+      publish:
+        description: publish the GitHub release (otherwise build only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Version, tag and release notes agree
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "app-v$v" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $v (expected app-v$v)"; exit 1
+          fi
+          grep -qx "## $v" RELEASES.md || { echo "::error::RELEASES.md has no \"## $v\" section"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: macos-14
+            targets: --mac --win
+          - runner: ubuntu-latest
+            targets: --linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: euta-app
+      - uses: actions/checkout@v4
+        with:
+          repository: onedark23/euta-engine
+          ref: ${{ inputs.engine_ref || 'main' }}
+          path: euta-engine
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      # The engine only needs its TypeScript build here; its one native module (robotjs, OS input) is resolved from
+      # prebuilds when the release stage installs the packed engine.
+      - name: Engine dependencies
+        working-directory: euta-engine
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: App dependencies
+        working-directory: euta-app
+        run: pnpm install --frozen-lockfile
+      - name: Release build (${{ matrix.targets }})
+        working-directory: euta-app
+        run: pnpm release ${{ matrix.targets }}
+      # Only the release files, laid out as release/<version>/<mac|win|linux>/ for release:github.
+      - name: Collect release files
+        shell: bash
+        run: |
+          v=${{ needs.check.outputs.version }}
+          mkdir -p out
+          for os in mac win linux; do
+            d=euta-app/release/$v/$os
+            [ -d "$d" ] || continue
+            mkdir -p out/$os
+            find "$d" -maxdepth 1 -type f \( -name 'latest*.yml' -o -name 'euta-*' \) ! -name '*__uninstaller*' -exec cp {} out/$os/ \;
+          done
+          ls -lR out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.runner }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [check, build]
+    if: github.ref_type == 'tag' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release/${{ needs.check.outputs.version }}
+      - name: Publish the GitHub release (latest, not a prerelease)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -lR release
+          node scripts/release-github.mjs --publish

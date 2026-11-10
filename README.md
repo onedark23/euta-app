@@ -33,7 +33,12 @@ ditto release/dist/mac-arm64/euta.app /Applications/euta.app
 - 패키징된 앱으로 E2E: `EUTA_E2E_EXECUTABLE=$PWD/release/dist/mac-arm64/euta.app/Contents/MacOS/euta npx playwright test`
 - `EUTA_PACKAGE_OUT=release/e2e pnpm package` — 출력 폴더를 바꾼다(`release/dist` 의 앱을 실행 중일 때 덮어쓰지 않고 패키징 E2E 를 돌릴 때).
 
-## 릴리스 빌드 · 올리기 (SPEC_앱-배포-업데이트 · ADR-042 · ADR-047)
+## 릴리스 빌드 · 올리기 (SPEC_앱-배포-업데이트 · ADR-042 · ADR-047 · ADR-048)
+
+**기본 = 태그 하나**(ADR-048): 버전 올리기 + `RELEASES.md` 절 → 커밋 · push → `git tag app-v<버전> && git push origin app-v<버전>`. GitHub Actions(`.github/workflows/release.yml`)가 빌드하고(macOS 러너 = 맥 arm64 · x64 + Windows x64, Ubuntu 러너 = Linux x64) GitHub 릴리스를 게시한다. 앱 배포를 하는 euta cloud 서버(`APP_MIRROR_GITHUB`)는 몇 분 안에 같은 버전을 가져와 게시한다. 태그와 `package.json` 버전이 다르거나 노트 절이 없으면 빌드 전에 멈춘다. Actions 의 수동 실행(Run workflow)은 기본이 **빌드만**(게시 안 함) — 빌드 시험용.
+
+아래는 이 맥에서 직접 하는 **예비 경로**다(Actions 장애 · 서버에만 먼저 올릴 때).
+
 
 버전은 `package.json` `version`(SemVer, 알파 동안 `0.1.0-alpha.N`). prerelease 이름이 채널이다(`alpha` — 클라우드 미러의 업데이트 주소 `https://<서버>/updates/alpha/`). 의존성은 **범위**로 적고(정확한 버전 고정 금지), 재현성은 `pnpm-lock.yaml` 이 맡는다 — 빌드는 설치된 정확한 버전을 스테이징에 넣는다.
 
